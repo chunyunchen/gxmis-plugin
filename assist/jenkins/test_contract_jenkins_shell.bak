@@ -1,0 +1,30 @@
+cd $WORKSPACE
+
+if [[ ! -d ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/} ]];then
+mkdir -p ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
+cp -R $EOSIO_SYSTEM_CONTRACT_REPO_DIR/. ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
+
+fi
+
+if [[ "true" == $UPDATE_CONTRACT_REPO ]]; then
+	rm -rf ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
+    mkdir ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
+	cp -R $EOSIO_SYSTEM_CONTRACT_REPO_DIR/. ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
+fi
+
+rm -rf ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}/assist
+mv assist ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
+
+
+cd ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
+./assist/modify_contract_for_mis.sh
+./build.sh
+
+cd ../contracts/exchange
+mkdir -p ./build
+cd ./build
+cmake ..
+make
+
+cd $WORKSPACE/${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
+./assist/jenkins/$TEST_CASES
