@@ -55,7 +55,9 @@ void data_exchange_api_plugin::plugin_startup() {
 
    app().get_plugin<http_plugin>().add_api({
       CALL(exchange,dep_obj,push_action,
-            INVOKE_R_R(dep_obj,push_action,eosio::push_action_params),200)
+            INVOKE_R_R(dep_obj,push_action,eosio::push_action_params),200),
+      CALL(exchange,dep_obj,limit_order,
+            INVOKE_R_R(dep_obj,limit_order,eosio::limit_order_params),200)
    });	
 
 }

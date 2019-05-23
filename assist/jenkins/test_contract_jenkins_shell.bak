@@ -7,9 +7,9 @@ cp -R $EOSIO_SYSTEM_CONTRACT_REPO_DIR/. ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
 fi
 
 if [[ "true" == $UPDATE_CONTRACT_REPO ]]; then
-	rm -rf ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
+    rm -rf ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
     mkdir ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
-	cp -R $EOSIO_SYSTEM_CONTRACT_REPO_DIR/. ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
+    cp -R $EOSIO_SYSTEM_CONTRACT_REPO_DIR/. ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
 fi
 
 rm -rf ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}/assist
@@ -21,6 +21,10 @@ cd ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
 ./build.sh
 
 cd ../contracts/exchange
+if [[ -d ./build ]]; then
+    rm -rf ./build
+fi
+
 mkdir -p ./build
 cd ./build
 cmake ..
@@ -28,3 +32,4 @@ make
 
 cd $WORKSPACE/${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
 ./assist/jenkins/$TEST_CASES
+

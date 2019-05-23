@@ -36,12 +36,14 @@ struct async_result_visitor : public fc::visitor<std::string>
 
 class data_exchange_plugin_impl
 {
- private:
+private:
    class wallet_guard
    {
-    public:
-      wallet_guard(data_exchange_plugin_impl &p, const eosio::wallet_params &wp) : _parent(p), _wp(wp)
+   public:
+      // @param wltpwd: 钱包名与解锁密码对，格式：wallet:password[,wallet:password]
+      wallet_guard(data_exchange_plugin_impl &p, const std::string &wltpwd) : _parent(p)
       {
+         parse_wltpwd(wltpwd);
          unlock();
       }
       ~wallet_guard()
@@ -49,30 +51,50 @@ class data_exchange_plugin_impl
          lock();
       }
 
-    private:
+   private:
       void unlock()
       {
-         _parent.call(client::http::wallet_open, fc::variant(_wp.wallet_name));
+         for (auto &wp : vec_wltpwd)
+         {
+            _parent.call(client::http::wallet_open, fc::variant(wp.name));
 
-         fc::variants vs = {fc::variant(_wp.wallet_name), fc::variant(_wp.wallet_pwd)};
-         _parent.call(client::http::wallet_unlock, vs);
+            fc::variants vs = {fc::variant(wp.name), fc::variant(wp.pwd)};
+            _parent.call(client::http::wallet_unlock, vs);
+         }
       }
+
       void lock()
       {
-         _parent.call(client::http::wallet_lock, fc::variant(_wp.wallet_name));
+         for (auto &wp : vec_wltpwd)
+         {
+            _parent.call(client::http::wallet_lock, fc::variant(wp.name));
+         }
       }
 
-    private:
+      void parse_wltpwd(const std::string &wltpwd)
+      {
+         vector<string> vec_wpwd;
+         boost::split(vec_wpwd, wltpwd, boost::is_any_of(":,"));
+         auto wlt_num = vec_wpwd.size() / 2;
+         for (auto i = 0; i < wlt_num; i++)
+         {
+            vec_wltpwd.push_back({fc::trim(vec_wpwd[2 * i]), fc::trim(vec_wpwd[2 * i + 1])});
+         }
+      }
+
+   private:
       data_exchange_plugin_impl &_parent;
-      const eosio::wallet_params &_wp;
+      std::vector<eosio::wallet_params> vec_wltpwd;
    };
 
- public:
+public:
    // 提交action
    fc::variant push_action(const push_action_params &params)
    {
-      wallet_guard wg(*this, params.wallet);
+      wallet_guard wg(*this, params.wltpwd);
+
       auto accountPermissions = get_account_permissions(params.permissions);
+
       fc::variant action_args_var;
       if (!params.action_args.empty())
       {
@@ -87,23 +109,72 @@ class data_exchange_plugin_impl
       return send_actions({chain::action{accountPermissions, params.account, params.action_name, variant_to_bin(params.account, params.action_name, action_args_var)}});
    }
 
- public:
+   // 挂单/限价交易
+   fc::variant limit_order(const limit_order_params &params)
+   {
+      cell_deal cdeal{
+          .create_time = fc::time_point::now(),
+          .commodity_type = params.commodity_type,
+          .commodity = params.commodity,
+          .account = account_name(params.account),
+          .amount = params.amount,
+          .price = asset::from_string(params.price),
+          .oper = (params.oper == 0 ? deal_op::ask_op : deal_op::bid_op)};
+
+      // TODO: 触发挂单交易合约，将委托交易入库
+
+      if (cdeal.oper == deal_op::bid_op)
+      {
+         prio_queue_bid.push(cdeal);
+      }
+      else
+      {
+         prio_queue_ask.push(cdeal);
+      }
+
+      return fc::variant();
+   }
+
+   // 自动撮合交易
+   void match_limit_order()
+   {
+      deal_timer->expires_from_now(deal_interval);
+      deal_timer->async_wait([this](boost::system::error_code ec) {
+         match_limit_order();
+
+         if (ec)
+         {
+            wlog("Peer deal ticked sooner than expected: ${m}", ("m", ec.message()));
+         }
+
+         do_match_limit_order();
+      });
+   }
+
+public:
    data_exchange_plugin_impl()
    {
       context = eosio::client::http::create_http_context();
    }
+
    void set_wallet_url(const std::string &wurl)
    {
       _wallet_url = wurl;
    }
 
- private:
+public:
+   unique_ptr<boost::asio::steady_timer> deal_timer;
+
+private:
    const fc::microseconds abi_serializer_max_time = fc::milliseconds(500);
+   const boost::asio::steady_timer::duration deal_interval{std::chrono::milliseconds{10}};
    std::string _wallet_url;
    client::http::http_context context;
    vector<string> headers;
+   std::priority_queue<cell_deal> prio_queue_ask;
+   std::priority_queue<cell_deal, std::vector<cell_deal>, cell_greater_cmp> prio_queue_bid;
 
- private:
+private:
    using get_abi_params = eosio::chain_apis::read_only::get_abi_params;
    using get_info_params = eosio::chain_apis::read_only::get_info_params;
    using get_block_params = eosio::chain_apis::read_only::get_block_params;
@@ -112,9 +183,51 @@ class data_exchange_plugin_impl
    using push_transaction_results = eosio::chain_apis::read_write::push_transaction_results;
    using get_required_keys_result = eosio::chain_apis::read_only::get_required_keys_result;
 
-   fc::variant send_actions(std::vector<chain::action> &&actions, int32_t extra_kcpu = 1000, packed_transaction::compression_type compression = packed_transaction::none)
+   void do_match_limit_order()
    {
-      auto result = push_actions(move(actions), extra_kcpu, compression);
+      // TODO: 从mis.exchange账号中的成交价格表获取当前成交价格
+      //       commodity_type|commodity|price
+      // initialized value is "0.0000 ${CORE_SYMBOL}"
+      asset cur_price;
+
+      if (!prio_queue_ask.empty() && !prio_queue_bid.empty())
+      {
+         auto ask_deal = prio_queue_ask.top();
+         auto bid_deal = prio_queue_bid.top();
+
+         if (ask_deal < bid_deal)
+         {
+            if (cur_price < ask_deal.price)
+               cur_price = ask_deal.price;
+            else if (cur_price > bid_deal.price)
+               cur_price = bid_deal.price;
+
+            prio_queue_ask.pop();
+            prio_queue_bid.pop();
+            if (ask_deal.amount < bid_deal.amount)
+            {
+               cell_deal cdeal(bid_deal);
+               cdeal.amount -= ask_deal.amount;
+               prio_queue_bid.push(cdeal);
+            }
+            else if (ask_deal.amount > bid_deal.amount)
+            {
+               cell_deal cdeal(ask_deal);
+               cdeal.amount -= bid_deal.amount;
+               prio_queue_ask.push(cdeal);
+            }
+
+            // TODO: 触发撮合成功交易合约
+         }
+      }
+   }
+
+   fc::variant send_actions(std::vector<chain::action> &&actions,
+                            int32_t extra_kcpu = 1000,
+                            packed_transaction::compression_type compression = packed_transaction::none,
+                            bool tx_dont_broadcast = true)
+   {
+      auto result = push_actions(move(actions), extra_kcpu, compression, tx_dont_broadcast);
 
       return result;
    }
@@ -133,15 +246,22 @@ class data_exchange_plugin_impl
       return accountPermissions;
    }
 
-   fc::variant push_actions(std::vector<chain::action> &&actions, int32_t extra_kcpu, packed_transaction::compression_type compression = packed_transaction::none)
+   fc::variant push_actions(std::vector<chain::action> &&actions,
+                            int32_t extra_kcpu,
+                            packed_transaction::compression_type compression = packed_transaction::none,
+                            bool tx_dont_broadcast = true)
    {
       signed_transaction trx;
       trx.actions = std::forward<decltype(actions)>(actions);
 
-      return may_push_transaction(trx, extra_kcpu, compression);
+      return may_push_transaction(trx, extra_kcpu, compression, tx_dont_broadcast);
    }
 
-   fc::variant may_push_transaction(signed_transaction &trx, int32_t extra_kcpu = 1000, packed_transaction::compression_type compression = packed_transaction::none)
+   fc::variant may_push_transaction(
+       signed_transaction &trx,
+       int32_t extra_kcpu = 1000,
+       packed_transaction::compression_type compression = packed_transaction::none,
+       bool tx_dont_broadcast = true)
    {
       auto ro_api = app().get_plugin<chain_plugin>().get_read_only_api();
 
@@ -182,7 +302,6 @@ class data_exchange_plugin_impl
       }
 
       bool tx_skip_sign = false;
-      bool tx_dont_broadcast = true;
       bool tx_return_packed = true;
 
       if (!tx_skip_sign)
@@ -259,13 +378,13 @@ class data_exchange_plugin_impl
       }
       else
       {
-         args = "[" +  args + "]";
+         args = "[" + args + "]";
       }
 
       // 需要用自定义的转义字符将输入参数值中包含的冒号和分号变换
       // 参数中的逗号转换为'%j',冒号转换为'%l'
       regex r_escape_comma("%j");
-      args = std::regex_replace(args, r_escape_comma, ","); 
+      args = std::regex_replace(args, r_escape_comma, ",");
       regex r_escape_colon("%l");
       args = std::regex_replace(args, r_escape_colon, ":");
    }
@@ -291,7 +410,10 @@ class data_exchange_plugin_impl
       }
    }
 
-   fc::variant call(const std::string &path) { return call(path, fc::variant()); }
+   fc::variant call(const std::string &path)
+   {
+      return call(path, fc::variant());
+   }
 
    optional<abi_serializer> abi_serializer_resolver(const name &account)
    {
@@ -371,6 +493,11 @@ fc::variant data_exchange_plugin::push_action(const push_action_params &params)
    return my->push_action(params);
 }
 
+fc::variant data_exchange_plugin::limit_order(const limit_order_params &params)
+{
+   return my->limit_order(params);
+}
+
 data_exchange_plugin::data_exchange_plugin() : my(new data_exchange_plugin_impl()) {}
 data_exchange_plugin::~data_exchange_plugin() {}
 
@@ -390,6 +517,9 @@ void data_exchange_plugin::plugin_initialize(const variables_map &options)
       }
    }
    FC_LOG_AND_RETHROW()
+
+   my->deal_timer.reset(new boost::asio::steady_timer(app().get_io_service()));
+   my->match_limit_order();
 }
 
 void data_exchange_plugin::plugin_startup()
