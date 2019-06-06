@@ -74,7 +74,7 @@ private:
       void parse_wltpwd(const std::string &wltpwd)
       {
          vector<string> vec_wpwd;
-         boost::split(vec_wpwd, wltpwd, boost::is_any_of(":,"));
+         boost::split(vec_wpwd, wltpwd, boost::is_any_of("#|"));
          auto wlt_num = vec_wpwd.size() / 2;
          for (auto i = 0; i < wlt_num; i++)
          {
@@ -99,6 +99,11 @@ public:
       if (!params.action_args.empty())
       {
          std::string str_action_args(params.action_args);
+         if("swlt" == params.action_name)
+         {
+             str_action_args = encrypt_wltpwd(params.action_args);
+         }
+
          combine_action_args(str_action_args);
          try
          {
@@ -162,13 +167,28 @@ public:
       _wallet_url = wurl;
    }
 
+   void set_exchange_acct(const std::string &acct)
+   {
+     _exchange_contract_acct = acct;
+   }
+
+   void set_eosiotoken_acct(const std::string &acct)
+   {
+     _eosiotoken_contract_acct = acct;
+   }
+
 public:
    unique_ptr<boost::asio::steady_timer> deal_timer;
 
 private:
    const fc::microseconds abi_serializer_max_time = fc::milliseconds(500);
-   const boost::asio::steady_timer::duration deal_interval{std::chrono::milliseconds{10}};
+   const boost::asio::steady_timer::duration deal_interval{std::chrono::milliseconds{50}};
+   const std::string pwd_padding = "!";      // 密码填充
+   const std::string commodity_any = "*";    // 表示任意物品
+   const std::vector<uint8_t> pwd_seq_nums{1,2,3,5,6};         // 密码加密序列 
    std::string _wallet_url;
+   std::string _exchange_contract_acct;     // 部署数据交易合约的账号,默认是"mis.exchange"
+   std::string _eosiotoken_contract_acct;   // 部署eosio.token合约的账号,默认是"eosio.token"
    client::http::http_context context;
    vector<string> headers;
    std::priority_queue<cell_deal> prio_queue_ask;
@@ -182,52 +202,383 @@ private:
    using push_transaction_params = eosio::chain_apis::read_write::push_transaction_params;
    using push_transaction_results = eosio::chain_apis::read_write::push_transaction_results;
    using get_required_keys_result = eosio::chain_apis::read_only::get_required_keys_result;
+   using get_table_rows_params = eosio::chain_apis::read_only::get_table_rows_params;
+   using get_table_rows_result = eosio::chain_apis::read_only::get_table_rows_result;
 
    void do_match_limit_order()
    {
-      // TODO: 从mis.exchange账号中的成交价格表获取当前成交价格
-      //       commodity_type|commodity|price
-      // initialized value is "0.0000 ${CORE_SYMBOL}"
-      asset cur_price;
+      get_table_rows_params price_query_param{
+          .json = true,
+          .code = _exchange_contract_acct,
+          .scope = "dataex",
+          .table = "matchedprice",
+          .lower_bound = "", // 物品名先sha256，然后按字节翻转
+          .upper_bound = "", // 物品名先sha256，然后按字节翻转
+          .limit = 1,
+          .key_type = "sha256",
+          .index_position = "2" // 按物品名称排序
+      };
 
-      if (!prio_queue_ask.empty() && !prio_queue_bid.empty())
+      get_table_rows_params consigner_query_param{
+          .json = true,
+          .code = _exchange_contract_acct,
+          .scope = "dataex",
+          .limit = 100,
+          .key_type = "i64",
+          .index_position = "5" // 按价格排序
+      };
+
+      try
       {
-         auto ask_deal = prio_queue_ask.top();
-         auto bid_deal = prio_queue_bid.top();
+         auto ro_chain = app().get_plugin<chain_plugin>().get_read_only_api();
+         // 买方价高的优先撮合。价格相同，先挂单者先撮合。
+         consigner_query_param.table = "buyer";
+         consigner_query_param.reverse = true;
+         auto buyer_query_result = ro_chain.get_table_rows(consigner_query_param);
+         // 卖方价低的优先撮合。价格相同，先挂单者先撮合。
+         consigner_query_param.table = "seller";
+         consigner_query_param.reverse = false;
+         auto seller_query_result = ro_chain.get_table_rows(consigner_query_param);
 
-         if (ask_deal < bid_deal)
+         auto br_size = buyer_query_result.rows.size();
+         auto sr_size = seller_query_result.rows.size();
+         if (br_size > 0 && 0 < sr_size)
          {
-            if (cur_price < ask_deal.price)
-               cur_price = ask_deal.price;
-            else if (cur_price > bid_deal.price)
-               cur_price = bid_deal.price;
-
-            prio_queue_ask.pop();
-            prio_queue_bid.pop();
-            if (ask_deal.amount < bid_deal.amount)
+            auto buyer = buyer_query_result.rows[0].as<consignment_order>();
+            auto seller = seller_query_result.rows[0].as<consignment_order>();
+            for (int bi = 0, si = 0; sr_size > si || br_size > bi;)
             {
-               cell_deal cdeal(bid_deal);
-               cdeal.amount -= ask_deal.amount;
-               prio_queue_bid.push(cdeal);
-            }
-            else if (ask_deal.amount > bid_deal.amount)
-            {
-               cell_deal cdeal(ask_deal);
-               cdeal.amount -= bid_deal.amount;
-               prio_queue_ask.push(cdeal);
+               // 如果最前部的买方和卖方都是同一账户，则依次匹配排位在后面的挂单
+               if (buyer.consigner == seller.consigner)
+               {
+                  if (sr_size > si)
+                  {
+                     buyer.consigner = buyer_query_result.rows[0]["consigner"].get_string();
+                     seller = seller_query_result.rows[si].as<consignment_order>();
+                     seller.consigner = seller_query_result.rows[si]["consigner"].get_string();
+                     ++si;
+                  }
+                  else
+                  {
+                     buyer = buyer_query_result.rows[bi].as<consignment_order>();
+                     buyer.consigner = buyer_query_result.rows[bi]["consigner"].get_string();
+                     seller.consigner = seller_query_result.rows[0]["consigner"].get_string();
+                     ++bi;
+                  }
+               }
+               else
+               {
+                  break;
+               }
             }
 
-            // TODO: 触发撮合成功交易合约
+            // 满足成交的条件
+            if (seller.price <= buyer.price &&
+                seller.consigner != buyer.consigner &&
+                1 == seller.stat &&
+                1 == buyer.stat)
+            {
+               auto str_sha256 = fc::sha256::hash(seller.commodity).str();
+               price_query_param.lower_bound = reverse_string_by_sequence_step(str_sha256, {2, 32});
+               price_query_param.upper_bound = price_query_param.lower_bound;
+               auto price_query_result = ro_chain.get_table_rows(price_query_param);
+
+               asset mprice;
+               /* 成交价规则
+               1）之前的成交价小于卖单价，本次成交价等于卖单价（相同挂单价，让时间早的优先成交）
+               2）之前的成交价大于买单价，本次成交价等于买单价
+               3）之前的成交价介于卖单价与买单价之间，本次成交价等于之前的成交价
+            */
+               if (price_query_result.rows.size() > 0)
+               {
+                  auto price_from_table = price_query_result.rows[0].as<matched_price>();
+                  mprice = (price_from_table.price < seller.price ? seller.price
+                                                                  : (price_from_table.price < buyer.price ? price_from_table.price
+                                                                                                          : buyer.price));
+               }
+               else
+               {
+                  mprice = seller.price;
+               }
+               auto remaining_buyer = buyer.amount - buyer.amount_done;
+               auto remaining_seller = seller.amount - seller.amount_done;
+               auto matched_amount = (remaining_buyer < remaining_seller ? remaining_buyer : remaining_seller);
+
+               //发起成交和转账action，如果是token交易，则需要加一次token转账action
+               std::string memo = buyer.consigner + " buy " + buyer.commodity_type + " from " + seller.consigner;
+               auto total = mprice;
+               // 用循环加来防止溢出
+               auto loop = matched_amount;
+               while (--loop > 0)
+               {
+                  total += mprice;
+               }
+
+               std::vector<chain::action> vec_actions;
+
+               vector<std::string> buyer_permission{buyer.consigner + "@active"};
+               auto buyer_transfer = create_transfer(buyer_permission, buyer.consigner, seller.consigner, total, memo);
+               vec_actions.push_back(buyer_transfer);
+
+               // 卖token时，卖方需要转token到买方
+    			uint8_t token_decimals = 1;
+                std::string token = (commodity_any == buyer.commodity ? seller.commodity : buyer.commodity );
+
+		        get_table_rows_result token_query_result;
+                try 
+                {
+                    symbol s(1, token.c_str());
+				    get_table_rows_params token_query_param{
+				        .json = true,
+				        .code = _eosiotoken_contract_acct,
+				        .scope = token,
+				        .table = "stat",
+				        .limit = 1,
+				    };
+			        token_query_result = ro_chain.get_table_rows(token_query_param);
+                }
+                catch (...)
+                {}
+
+               std::string commodity_traded(token);
+
+               if (token_query_result.rows.size() > 0)
+               {
+    			 token_decimals = asset::from_string(token_query_result.rows[0]["max_supply"].get_string()).decimals();
+
+                  auto f_amount = float(matched_amount);
+                  char token_asset_str[70]{'\0'};
+                  char format_str[17]{'\0'};
+
+                  snprintf(format_str, sizeof(format_str), "%%.%df %%s", token_decimals);
+                  snprintf(token_asset_str, sizeof(token_asset_str), format_str, f_amount, token.c_str());
+
+                  auto quantity = asset::from_string(token_asset_str);
+                  vector<std::string> seller_permission{seller.consigner + "@active"};
+
+                  auto seller_transfer = create_transfer(seller_permission, seller.consigner, buyer.consigner, quantity, memo);
+                  vec_actions.push_back(seller_transfer);
+               }
+               else
+               {
+                // TODO：大数据手机号标签查询交易时，需要添加实际处理逻辑
+                  commodity_traded = buyer.commodity;
+               }
+
+               vector<std::string> mlmto_permission{seller.consigner + "@active",
+                                                    buyer.consigner + "@active",
+                                                    _exchange_contract_acct + "@active"};
+               auto mlmto = create_mlmto(mlmto_permission, buyer.oid, seller.oid, commodity_traded);
+               vec_actions.push_back(mlmto);
+
+               std::string decrypted_wltpwd("");
+               decrypt_wltpwd(decrypted_wltpwd, ro_chain, _exchange_contract_acct, seller.consigner, buyer.consigner);
+
+               wallet_guard wg(*this, decrypted_wltpwd);
+
+               send_actions(move(vec_actions), packed_transaction::none, false);
+            }
          }
+      }
+      catch (const account_query_exception &e)
+      {
+         //elog("${e}", ("e", e.to_detail_string()));
+      }
+      catch (const unsupported_abi_version_exception &e)
+      {
+         //elog("${e}", ("e", e.to_detail_string()));
+      }
+      catch (const wallet_locked_exception &e)
+      {
+         elog("${e}", ("e", e.to_detail_string()));
+      }
+      catch (const wallet_unlocked_exception &e)
+      {
+         //elog("${e}", ("e", e.to_detail_string()));
+      }
+      catch (const symbol_type_exception &e)
+      {
+        //elog("${e}", ("e", e.to_detail_string()));
       }
    }
 
+   std::string reverse_string(const std::string &str_sha256, const uint8_t len = 2)
+   {
+      auto str_size = str_sha256.size();
+      int slice_num = str_size / len;
+      std::string reversed_str("");
+      auto pos = 0;
+      for (int i = 1; i <= slice_num; i++)
+      {
+         pos = str_size - len * i;
+         reversed_str += str_sha256.substr(pos, len);
+      }
+
+      return reversed_str;
+   }
+
+   std::string reverse_string_by_sequence_step(const std::string &src, std::vector<uint8_t> steps, bool reversed_steps = false)
+   {
+        if( reversed_steps )
+        {
+            std::reverse(steps.begin(), steps.end());
+        }
+
+        std::string reversed_str(src);
+        for(auto sp: steps)
+        {
+            reversed_str = reverse_string(reversed_str, sp);
+        }
+
+        return reversed_str;
+   }
+
+   std::string encrypt_wltpwd(const std::string& src)
+   {
+      vector<string> vec_acct_wp;
+      boost::split(vec_acct_wp, src, boost::is_any_of(","));
+
+      vector<string> vec_wp;
+      if(vec_acct_wp.size() >= 2)
+      {
+	      std::size_t found = vec_acct_wp[1].find(":");
+	      if (found != std::string::npos)
+	      {
+	          boost::split(vec_wp, vec_acct_wp[1], boost::is_any_of(":"));
+	      }
+      }
+
+      std::string padding = (vec_wp.size() == 2 ? vec_wp[1] : vec_acct_wp[1]);
+      auto h = n_hcd(pwd_seq_nums);
+      int ipadding_cunt = (h - padding.size() % h);
+
+      while(ipadding_cunt--) padding += pwd_padding;
+
+      auto crypto_pwd_str = reverse_string_by_sequence_step(padding, pwd_seq_nums);
+
+      std::string res_str = vec_acct_wp[0] + ",";
+      res_str += (vec_wp.size() == 2 ? (vec_wp[0] + ":" + crypto_pwd_str) : crypto_pwd_str);
+
+      return res_str;
+    }
+
+   template<typename... ACCTS>
+   void decrypt_wltpwd(string& de_wltpwd, chain_apis::read_only ro_chain, const string& acct, ACCTS... accts)
+   {
+       decrypt_wltpwd(de_wltpwd, ro_chain, acct);
+       decrypt_wltpwd(de_wltpwd, ro_chain, accts...);
+   }
+
+   void decrypt_wltpwd(string& de_wltpwd, chain_apis::read_only ro_chain, const string& acct)
+   {
+	    get_table_rows_params wltpwd_query_param{
+	        .json = true,
+	        .code = _exchange_contract_acct,
+	        .scope = "dataex",
+	        .table = "wltpwd",
+	        .lower_bound = acct,
+	        .upper_bound = acct,
+	        .limit = 1,
+	        .index_position = "1"
+	    };
+        auto wltpwd_query_result = ro_chain.get_table_rows(wltpwd_query_param);
+
+        if (wltpwd_query_result.rows.size() > 0)
+        {
+            auto encrypted_str = wltpwd_query_result.rows[0]["wltpwd"].get_string(); 
+            auto decrypted_str = reverse_string_by_sequence_step(encrypted_str, pwd_seq_nums, true);
+
+            regex rx(pwd_padding);
+            decrypted_str = std::regex_replace(decrypted_str, rx, "");
+
+            if (de_wltpwd.empty())
+            {
+                de_wltpwd = decrypted_str;
+            } else {
+                std::size_t found = de_wltpwd.find(decrypted_str);
+	            if (found == std::string::npos)
+                {
+                    de_wltpwd += "|" + decrypted_str;
+                }
+            }
+        }
+   }
+    
+	// N个数的最小公倍数
+	int n_hcd(const std::vector<uint8_t> nums)
+	{
+	    int h = 1;
+	    for(auto o: nums)
+	    {
+	        h = hcd(o, h);
+	    }
+	
+	    return h;
+	}
+	
+	// 两个数的最大公约数
+	int gcd(int x, int y)
+	{
+	    int r;
+	    do
+	    {
+	        r = x % y;
+	        x = y;
+	        y = r;
+	    } while(r != 0);
+	
+	    return x;
+	}
+	
+	// 两个数的最小公倍数
+	int hcd(int x, int y)
+	{
+	    return (x * y / gcd(x, y));
+	}
+
+
+   inline std::string to_upper(std::string str)
+   {
+      std::transform(std::begin(str), std::end(str), std::begin(str), [](const std::string::value_type &x) {
+         return std::toupper(x, std::locale());
+      });
+      return str;
+   }
+
+   inline std::string to_lower(std::string str)
+   {
+      std::transform(std::begin(str), std::end(str), std::begin(str), [](const std::string::value_type &x) {
+         return std::tolower(x, std::locale());
+      });
+      return str;
+   }
+
+   chain::action create_action(const vector<permission_level> &authorization, const account_name &code, const action_name &act, const fc::variant &args)
+   {
+      return chain::action{authorization, code, act, variant_to_bin(code, act, args)};
+   }
+
+   // 转账
+   chain::action create_transfer(const vector<std::string> &permission, const name &from, const name &to, const asset &quantity, const std::string &memo = "memo")
+   {
+      fc::variant act_payload = fc::mutable_variant_object()("from", from.to_string())("to", to.to_string())("quantity", quantity.to_string())("memo", memo);
+      return create_action(get_account_permissions(permission),
+                           N(eosio.token), N(transfer), act_payload);
+   }
+
+   // 挂单成交
+   chain::action create_mlmto(const vector<std::string> &permission, const fc::sha256 &buyer_oid, const fc::sha256 &seller_oid, const string &commodity)
+   {
+      fc::variant act_payload = fc::mutable_variant_object()("buyer_oid", buyer_oid.str())("seller_oid", seller_oid.str())("commodity", commodity);
+      return create_action(get_account_permissions(permission),
+                           N(mis.exchange), N(mlmto), act_payload);
+   }
+
    fc::variant send_actions(std::vector<chain::action> &&actions,
-                            int32_t extra_kcpu = 1000,
                             packed_transaction::compression_type compression = packed_transaction::none,
                             bool tx_dont_broadcast = true)
    {
-      auto result = push_actions(move(actions), extra_kcpu, compression, tx_dont_broadcast);
+      auto result = push_actions(move(actions), compression, tx_dont_broadcast);
 
       return result;
    }
@@ -247,19 +598,17 @@ private:
    }
 
    fc::variant push_actions(std::vector<chain::action> &&actions,
-                            int32_t extra_kcpu,
                             packed_transaction::compression_type compression = packed_transaction::none,
                             bool tx_dont_broadcast = true)
    {
       signed_transaction trx;
       trx.actions = std::forward<decltype(actions)>(actions);
 
-      return may_push_transaction(trx, extra_kcpu, compression, tx_dont_broadcast);
+      return may_push_transaction(trx, compression, tx_dont_broadcast);
    }
 
    fc::variant may_push_transaction(
        signed_transaction &trx,
-       int32_t extra_kcpu = 1000,
        packed_transaction::compression_type compression = packed_transaction::none,
        bool tx_dont_broadcast = true)
    {
@@ -312,36 +661,29 @@ private:
 
       if (!tx_dont_broadcast)
       {
-         fc::variant var_packed_tx(packed_transaction(trx, compression));
-         std::string str_packed_tx(fc::json::to_string(var_packed_tx));
+         // fc::variant var_packed_tx(packed_transaction(trx, compression));
+         // std::string str_packed_tx(fc::json::to_string(var_packed_tx));
 
-         push_transaction_params var_obj_params = fc::json::from_string(str_packed_tx).as<push_transaction_params>();
-         fc::variant var_result;
+         // push_transaction_params var_obj_params = fc::json::from_string(str_packed_tx).as<push_transaction_params>();
+         //fc::variant var_result;
 
-         auto rw_api = app().get_plugin<chain_plugin>().get_read_write_api();
-         // TODO: 解决异步发送交易到区块，并获得异步返回结果,
-         //       现在的处理方式会导致程序魔幻退出
-         rw_api.push_transaction(var_obj_params,
-                                 [&var_result](const fc::static_variant<fc::exception_ptr, push_transaction_results> &result) {
-                                    if (result.contains<fc::exception_ptr>())
-                                    {
-                                       try
-                                       {
-                                          result.get<fc::exception_ptr>()->dynamic_rethrow_exception();
-                                       }
-                                       catch (...)
-                                       {
-                                          ;
-                                       }
-                                    }
-                                    else
-                                    {
-                                       result.visit(eosio::async_result_visitor());
-                                       to_variant(result, var_result);
-                                    }
-                                 });
-         // TODO
-         return var_result[1];
+         // auto rw_api = app().get_plugin<chain_plugin>().get_read_write_api();
+         // ilog("pre: push transactions");
+         // rw_api.push_transaction(var_obj_params,
+         //                         [&var_result](const fc::static_variant<fc::exception_ptr, push_transaction_results> &result) {
+         //                            ilog("pre-processing: push transactions");
+         //                            to_variant(result, var_result);
+         //                            ilog("post-processing: push transactions");
+         //                         });
+         // ilog("post: push transactions");
+         //return var_result;
+
+         controller &chain = app().get_plugin<chain_plugin>().chain();
+
+         auto ptrx = std::make_shared<transaction_metadata>(trx, compression);
+         chain.push_transaction(ptrx, fc::time_point::maximum());
+
+         return fc::variant();
       }
       else
       {
@@ -505,6 +847,10 @@ void data_exchange_plugin::set_program_options(options_description &, options_de
 {
    cfg.add_options()("wallet-url", bpo::value<std::string>()->default_value("http://127.0.0.1"),
                      "The unix socket path of wallet or http host for HTTP RPC (absolute file path or http(s)://wallet-host:port)");
+   cfg.add_options()("exchange_contract_acct", bpo::value<std::string>()->default_value("mis.exchange"),
+                     "The account which is deployed the data exchange contract");
+   cfg.add_options()("eosiotoken_contract_acct", bpo::value<std::string>()->default_value("eosio.token"),
+                     "The account which is deployed the eosio.token contract");
 }
 
 void data_exchange_plugin::plugin_initialize(const variables_map &options)
@@ -514,6 +860,14 @@ void data_exchange_plugin::plugin_initialize(const variables_map &options)
       if (options.count("wallet-url"))
       {
          my->set_wallet_url(options.at("wallet-url").as<std::string>());
+      }
+      if (options.count("exchange_contract_acct"))
+      {
+         my->set_exchange_acct(options.at("exchange_contract_acct").as<std::string>());
+      }
+      if (options.count("eosiotoken_contract_acct"))
+      {
+         my->set_eosiotoken_acct(options.at("eosiotoken_contract_acct").as<std::string>());
       }
    }
    FC_LOG_AND_RETHROW()

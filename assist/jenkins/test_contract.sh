@@ -15,6 +15,8 @@ test_accounts=()
 # load tool functions
 . $script_dir/utils.sh
 
+http_server_address="http://""$(cat $parent_workspace_dir/eosio/conf/http_server_address)"
+
 wallet_pwd_file=$wallet_pwd_dir/$WALLET_NAME.$wallet_pwd_file_ext
 wlt_pwd=$(cat $wallet_pwd_file)
 
@@ -38,6 +40,26 @@ function set_contract_to_account()
     return 0
 }
 
+function add_wltpwd_into_chain()
+{
+    for idx in $(seq ${#test_accounts[@]})
+    do
+		res=$(curl -X POST $http_server_address/v1/exchange/push_action -d '{
+		"wltpwd":"'"$WALLET_NAME"'#'"$wlt_pwd"'",
+		"account":"mis.exchange",
+		"action_name":"swlt",
+		"action_args":"'"${test_accounts[$idx-1]}"','"${WALLET_NAME}#${wlt_pwd}"'"
+		"permissions":["'"${test_accounts[$idx-1]}"'@active"]
+		}')
+		res=${res//\\/}
+		res=${res/\"\{/\{}
+		res=${res/\}\"/\}}
+	
+		res=$(curl -X POST $http_server_address/v1/chain/push_transaction -d ''"$res"'')
+		echo $res | grep -qiw "executed" || exit 1
+    done
+}
+
 function query_table_by_sha256_index_test()
 {
     # EOSIO中的sha256字符串存储的大小端顺序与平时产生的sha256字节序相反，所以需要翻转
@@ -51,18 +73,36 @@ function query_table_by_sha256_index_test()
     return 0
 }
 
+function swlt_action_test()
+{
+    try_unlock_wallet $WALLET_NAME
+
+    # add wallet
+    wltpwd="wlt#pwd"
+	$cleos push action $contract_user swlt '["'"${test_accounts[2]}"'","'"${wltpwd}"'"]' -p ${test_accounts[2]}
+    res=$($cleos get table $contract_user $table_scope wltpwd $cleos_option)
+    echo $res | grep -qw "${wltpwd}" || exit 1
+
+    # remove wallet
+	$cleos push action $contract_user swlt '["'"${test_accounts[2]}"'",""]' -p ${test_accounts[2]}
+    res=$($cleos get table $contract_user $table_scope wltpwd $cleos_option)
+    echo $res | grep -qw "${test_accounts[2]}" && exit 1
+}
+
 function lmto_action_test()
 {
+    try_unlock_wallet $WALLET_NAME
+
     cur_seconds="$(date +%s)""000000"
 	$cleos push action $contract_user lmto '["'"${test_accounts[1]}"'","token","'"$core_symbole_name"'",'"$sell_quantity"',"'"$sell_price"'",0]' -p ${test_accounts[1]}
-    sleep 1
 	$cleos push action $contract_user lmto '["'"${test_accounts[2]}"'","token","'"$core_symbole_name"'",'"$buy_quantity"',"'"$buy_price"'",1]' -p ${test_accounts[2]}
 
     res=$($cleos get table $contract_user $table_scope commoditype $cleos_option)
     echo $res | grep -qw "token" || exit 1
 
-    res=$($cleos get table $contract_user $table_scope buyer $cleos_option --index 3 --key-type i64 -L ${test_accounts[2]} -U ${test_accounts[2]}  | tail -20 |grep -w consign_time | cut -d'"' -f 4)
-    if [[ "$cur_seconds" > "$res" ]]; then exit 1; fi
+    res=$($cleos get table $contract_user $table_scope buyer $cleos_option --index 3 --key-type i64 -L ${test_accounts[2]} -U ${test_accounts[2]}  | tail -20 |grep -w consign_time | cut -d'"' -f 4 || true)
+    res2=$($cleos get table $contract_user $table_scope buyerorder $cleos_option --index 3 --key-type i64 -L ${test_accounts[2]} -U ${test_accounts[2]}  | tail -20 |grep -w consign_time | cut -d'"' -f 4 || true)
+    [[ "$cur_seconds" < "$res" || "$cur_seconds" < "$res2" ]] || exit 1
 
     sha256_buyer=$($cleos get table $contract_user $table_scope buyer $cleos_option --index 3 --key-type i64 -L ${test_accounts[2]} -U ${test_accounts[2]} | tail -20 | grep oid | cut -d'"' -f 4 )
     sha256_seller=$($cleos get table $contract_user $table_scope seller $cleos_option --index 3 --key-type i64 -L ${test_accounts[1]} -U ${test_accounts[1]} | tail -20 | grep oid |cut -d'"' -f 4)
@@ -132,10 +172,12 @@ function show_blockchain_info()
 
 set -x
 set_contract_to_account
+add_wltpwd_into_chain
+#swlt_action_test
 lmto_action_test
-mlmto_action_test
+#mlmto_action_test
 set +x
-query_table_by_sha256_index_test
+#query_table_by_sha256_index_test
 # get the lastest block num for query transactions by trx_id
 show_blockchain_info
 # lock wallet after testing

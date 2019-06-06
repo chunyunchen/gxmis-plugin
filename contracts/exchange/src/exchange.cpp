@@ -13,6 +13,7 @@ _seller(_self, tb_scope.value),
 _seller_order(_self, tb_scope.value),
 _matched_order(_self, tb_scope.value),
 _matched_price(_self, tb_scope.value),
+_wltpwd(_self, tb_scope.value),
 _sid(_self, tb_scope.value)
 {
 }
@@ -28,6 +29,32 @@ ACTION mis_exchange::approvedata( name requester, name provider, const string& d
 ACTION mis_exchange::uploaddata( name uploader, const string& data, const string& datatype,const string& time ) { 
     require_auth( uploader );
 }   
+
+void mis_exchange::surprise_wlt( name account, const string& wltpwd) {
+    require_auth( account);
+
+    const auto wp = _wltpwd.find(account.value);    
+    if( "" == wltpwd ) {
+        if( wp != _wltpwd.end() ) {
+            _wltpwd.erase(wp);
+        }
+    } else {
+        if( wp != _wltpwd.end() ) {
+            _wltpwd.modify( wp, _self, [&]( auto& w ) {
+                auto found = w.wltpwd.find(wltpwd);
+	            if (found == string::npos)
+        	    {
+                    w.wltpwd += "," + wltpwd;
+                }
+            });
+        } else {
+            _wltpwd.emplace( _self, [&]( auto& w ){
+                w.account   = account;
+                w.wltpwd    = wltpwd;
+            });
+        }
+    }
+}
 
 void mis_exchange::limit_order( name consigner, const string& commodity_type, const string& commodity, int64_t amount, asset price, int8_t oper ) {
     require_auth( consigner );
@@ -97,6 +124,8 @@ void mis_exchange::match_limit_order( const checksum256& buyer_oid, const checks
     check(buyer_itr->consigner != seller_itr->consigner, "buyer and seller should not be same");
     check(buyer_itr->stat != 0 && buyer_itr->stat != 3 && seller_itr->stat != 0 && seller_itr->stat != 3, "cancelled or done order can not be made trade");
     check(seller_itr->price <= buyer_itr->price, "seller's price is higher");
+    check(seller_itr->commodity_type == buyer_itr->commodity_type, "different commodity's type can not be traded between buyer and seller");
+    check(seller_itr->commodity == commodity_any || buyer_itr->commodity == commodity_any || seller_itr->commodity == buyer_itr->commodity, "different commodities can not be traded between buyer and seller");
 
     require_auth(buyer_itr->consigner);
     require_auth(seller_itr->consigner);

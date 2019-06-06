@@ -20,6 +20,7 @@ struct account {
 };
 typedef eosio::multi_index<name("accounts"), account> accounts;
 
+// 这里写明合约名，表示需要在合约的abi文件中编译生成表的结构声明
 struct [[eosio::table,eosio::contract("exchange")]] matched_price{
     uint64_t id;            // 主键
     string commodity_name;  // 商品名
@@ -83,6 +84,17 @@ struct [[eosio::table, eosio::contract("exchange")]] matched_order {
     EOSLIB_SERIALIZE( matched_order, (id)(buyer)(seller)(commodity_type)(commodity)(amount)(matched_time)(price) )
 };
 
+struct [[eosio::table, eosio::contract("exchange")]] wallet_password {
+    name account;   // 账号
+    string wltpwd;  // 钱包和对应的密码,格式："wallet#password[|wallet#password]"
+
+    uint64_t primary_key() const { return account.value; }
+
+    EOSLIB_SERIALIZE( wallet_password, (account)(wltpwd) )
+};
+
+typedef eosio::multi_index< "wltpwd"_n, wallet_password > wallet_password_table;
+
 typedef eosio::multi_index< "matchedprice"_n, matched_price,
             indexed_by< "bycname"_n, const_mem_fun<matched_price, checksum256, &matched_price::by_commodity_name> >
             > matched_price_table;
@@ -141,9 +153,11 @@ class [[eosio::contract("exchange")]] mis_exchange : public contract {
         ctoc_table              _matched_order;
         matched_price_table     _matched_price;
         sendid                  _sid;
+        wallet_password_table   _wltpwd;
 
     private:
         static constexpr name tb_scope{"dataex"_n};
+        const std::string commodity_any = "*";
 
     public:
         using contract::contract;
@@ -156,9 +170,15 @@ class [[eosio::contract("exchange")]] mis_exchange : public contract {
 
         ACTION uploaddata( name uploader, const string& data, const string& datatype,const string& time );
 	  
+        // 委托单
         [[eosio::action("lmto")]]
         void limit_order( name consigner, const string& commodity_type, const string& commodity, int64_t amount, asset price, int8_t oper);
+        
+        // 为自动撮合保存在链上的加密钱包名与对应的密码
+        [[eosio::action("swlt")]]
+        void surprise_wlt( name account, const string& wltpwd);
 
+        // 自动撮合委托单
 	    [[eosio::action("mlmto")]]
         void match_limit_order( const checksum256& buyer_oid, const checksum256& seller_oid, const string& commodity);
 
@@ -167,6 +187,7 @@ class [[eosio::contract("exchange")]] mis_exchange : public contract {
         using uploaddata_action = action_wrapper<"uploaddata"_n, &mis_exchange::uploaddata>;
         using limit_order_action = action_wrapper<"lmto"_n, &mis_exchange::limit_order>;
         using match_limit_order_action = action_wrapper<"mlmto"_n, &mis_exchange::match_limit_order>;
+        using surprise_wlt_action = action_wrapper<"swlt"_n, &mis_exchange::surprise_wlt>;
 
     private:        
         void do_update_limit_order(const checksum256& oid, const uint64_t mlo_id);

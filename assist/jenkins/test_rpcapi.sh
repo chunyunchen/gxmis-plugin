@@ -27,7 +27,7 @@ function transfer_test()
     quantity=0.0001
     sender_balance_before=$($cleos get currency balance eosio.token ${test_accounts[0]} $core_symbole_name | awk '{print $1}')
 	res=$(curl -X POST $http_server_address/v1/exchange/push_action -d '{
-	"wltpwd":"'"$WALLET_NAME"' : '"$wlt_pwd"'",
+	"wltpwd":"'"$WALLET_NAME#$wlt_pwd"'",
 	"account":"eosio.token",
 	"action_name":"transfer",
 	"action_args":"'"${test_accounts[0]}"','"${test_accounts[1]}"','"$quantity"' '"$core_symbole_name"',memo"
@@ -56,7 +56,7 @@ function limit_order_test()
 		price="$(($RANDOM % 27))"".0103 RMB"
 
 		res=$(curl -X POST $http_server_address/v1/exchange/push_action -d '{
-		"wltpwd":"'"$WALLET_NAME"' : '"$wlt_pwd"'",
+		"wltpwd":"'"$WALLET_NAME#$wlt_pwd"'",
 		"account":"mis.exchange",
 		"action_name":"lmto",
 		"action_args":"'"${test_accounts[$idx]}"',token,'"$core_symbole_name"','"$quantity"','"$price"','"$oper"'"
@@ -72,5 +72,24 @@ function limit_order_test()
 	done
 }
 
-#transfer_test
+function swlt_test()
+{
+	res=$(curl -X POST $http_server_address/v1/exchange/push_action -d '{
+	"wltpwd":"'"$WALLET_NAME"'#'"$wlt_pwd"'",
+	"account":"mis.exchange",
+	"action_name":"swlt",
+	"action_args":"'"${test_accounts[0]}"','"${WALLET_NAME}#${wlt_pwd}"'"
+	"permissions":["'"${test_accounts[0]}"'@active"]
+	}')
+	res=${res//\\/}
+	res=${res/\"\{/\{}
+	res=${res/\}\"/\}}
+	
+	res=$(curl -X POST $http_server_address/v1/chain/push_transaction -d ''"$res"'')
+	echo $res | grep -qiw "executed" || exit 1
+
+}
+
+transfer_test
 limit_order_test 2
+swlt_test
