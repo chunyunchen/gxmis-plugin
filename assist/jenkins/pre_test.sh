@@ -10,17 +10,22 @@ eosio.saving
 eosio.stake
 eosio.token
 eosio.vpay
+eosio.rex
 )
 
 jenkins_dir=$(dirname $script_dir)
 assist_dir=$(dirname $jenkins_dir)
 
 creator=eosio
-pub_key="$pubkey_prefix""6MRyAjQq8ud7hVNYcfnVPJqcVpscN5So8BhtHuGYqET5GDW5CV"
+mis_system_account="mis.exchange"
 pri_key=5KQwrPbwdL6PhXujxW37FSSQZ1JiwsST4cqQzDeyXtP79zkvFD3
-total_tokens="10000000000.0000"
-each_account_tokens="10000000.0000"
+total_tokens="450000000000000.0000"
+mis_account_token_count="400000000000000.0000"
+ram_token_count="100000000.0000"
+delegated_token_count="10000.0000"
+balance_token_count="100000.0000"
 tokens=($core_symbole_name RMB CNY USDT USD)
+all_accounts_num=${#eosio_system_accounts[@]}
 
 function set_system_contracts()
 {
@@ -57,10 +62,14 @@ function may_transfer_tokens_to_test_accounts()
 		    balance=$($cleos get currency balance eosio.token $account $tk)
 		    echo $balance | grep -q $tk ||
 		    (
-			    $cleos push action eosio.token transfer '["eosio", "'"$account"'","'"$each_account_tokens $tk"'","memo"]' -p eosio
+			    $cleos push action eosio.token transfer '["eosio", "'"$account"'","'"$balance_token_count $tk"'","memo"]' -p eosio
+                if [[ "$mis_system_account" == "$account" ]]; then
+                    $cleos push action eosio.token transfer '["eosio", "'"$account"'","'"$mis_account_token_count $tk"'","memo"]' -p eosio
+                fi
+
                 if [[ "$core_symbole_name" == "$tk" ]]; then
-                    $cleos system buyram eosio $account "$each_account_tokens $core_symbole_name"
-			        $cleos system delegatebw eosio $account "$each_account_tokens $core_symbole_name" "$each_account_tokens $core_symbole_name" -p eosio
+                    $cleos system buyram eosio $account "$ram_token_count $core_symbole_name"
+			        $cleos system delegatebw eosio $account "$delegated_token_count $core_symbole_name" "$delegated_token_count $core_symbole_name" -p eosio
                 fi
 		    )
         done
@@ -88,6 +97,7 @@ function may_create_wallet()
     $cleos wallet open -n $1 ||
 	(
 		$cleos wallet create -n $1 --file $wallet_pwd_dir/$1.$wallet_pwd_file_ext
+        # 系统账号eosio的私钥
 		$cleos wallet import -n $1 --private-key $pri_key
 	)
 	return 0
@@ -102,10 +112,15 @@ function create_wallet()
 
 function may_create_account()
 {
+    all_accounts_num=$((${all_accounts_num} - 1))
+    prefix_len=${#pubkey_prefix}
+    pubkey_content="${all_pubkeys_in_wallet[$all_accounts_num]:$prefix_len}"
+    pub_key="$pubkey_prefix""$pubkey_content"
+
     $cleos get account $1 ||
 	(
-		$cleos create account $creator $1 $pub_key $pub_key || 
-        $cleos system newaccount eosio $1 $pub_key $pub_key --stake-net "10.0000 $core_symbole_name" --stake-cpu "10.0000 $core_symbole_name" --buy-ram "23.0000 $core_symbole_name"
+		$cleos create account $creator $1 $pub_key || 
+        $cleos system newaccount eosio $1 $pub_key --stake-net "10.0000 $core_symbole_name" --stake-cpu "10.0000 $core_symbole_name" --buy-ram "23.0000 $core_symbole_name"
 	)
 	return 0
 }
@@ -119,22 +134,83 @@ function create_system_accounts()
 	return 0
 }
 
-function create_test_accounts()
+function may_create_keys_in_wallet_and_get()
 {
-	OLD_IFS=$IFS
-	IFS=","
-	taccs=("$ACCOUNTS")
-	for account in ${taccs[@]}
-	do
-		test_accounts[${#test_accounts[@]}]=$account
-		may_create_account $account
-	done
-	IFS=$OLD_IFS
+    pubkey_count=$(pubkey_count_in_wallet)
+    keys_to_be_created_num=$((${all_accounts_num} - ${pubkey_count}))
+
+    create_keys $keys_to_be_created_num
+
+    OLD_IFS=$IFS
+    IFS="\"" 
+
+    raw_output=($($cleos wallet keys))
+    for key in ${raw_output[@]}
+    do
+        echo "$key" | grep -q $pubkey_prefix && all_pubkeys_in_wallet[${#all_pubkeys_in_wallet[@]}]=$key
+    done
+
+    IFS=$OLD_IFS
+
+    return 0
+}
+
+function create_keys()
+{
+    n=${1:-0}
+    for((i=1; i<=$n; i++))
+    do
+        $cleos wallet create_key -n $WALLET_NAME 
+    done
+
 	return 0
 }
 
-create_wallet
-create_system_accounts
-create_test_accounts
-set_system_contracts
-may_transfer_tokens_to_test_accounts
+function pubkey_count_in_wallet()
+{
+    count=$($cleos wallet keys |grep -c $pubkey_prefix)
+    echo $count
+
+	return 0
+}
+
+function create_test_accounts()
+{
+
+	for account in ${test_accounts[@]}
+	do
+		may_create_account $account
+	done
+
+    return 0
+}
+
+function set_test_accounts()
+{
+	OLD_IFS=$IFS
+	IFS=","
+
+    test_accounts=($ACCOUNTS)
+    all_accounts_num=$((${all_accounts_num} + ${#test_accounts[@]}))
+
+	IFS=$OLD_IFS
+
+    return 0
+}
+
+function main()
+{
+    create_wallet
+    set_test_accounts
+    may_create_keys_in_wallet_and_get
+    create_system_accounts
+    create_test_accounts
+    set_system_contracts
+    may_transfer_tokens_to_test_accounts
+
+    return 0
+}
+
+set +x
+main
+set -x

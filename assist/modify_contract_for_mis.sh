@@ -28,12 +28,35 @@ modified_list_old_new_file=(
 	'size()<21 size()<2 '$eosio_contract_dir'/contracts/eosio.system/src/voting.cpp <'
 )
 
-undo="undo"
+modifiled_files=("$eosio_contract_dir/contracts/eosio.system/src/eosio.system.cpp")
 
+undo="undo"
 ARCH=$( uname )
+
+function modify_newaccount_action()
+{
+    for f in "${modifiled_files[@]}"
+    do
+		echo $f
+        if [[ "X$undo" == "X$1" ]]; then
+			if [ "$ARCH" == "Linux" ]; then
+	            sed  -i -e 's#^\*/\( *user_resources_table *userres *( *_self *, *newact.value *);\)#\1#g' -e 's#^/\*\( *if *( *creator *!= *_self *)\)#\1#g' $f
+			else
+	            sed  -i "" -e 's#^\*/\( *user_resources_table *userres *( *_self *, *newact.value *);\)#\1#g' -e 's#^/\*\( *if *( *creator *!= *_self *)\)#\1#g' $f
+            fi
+        else
+			if [ "$ARCH" == "Linux" ]; then
+				sed  -i -e 's#\(^ *user_resources_table *userres *( *_self *, *newact.value *);\)#*/\1#g' -e 's#\(^ *if *( *creator *!= *_self *)\)#/*\1#g' $f
+			else
+				sed  -i "" -e 's#\(^ *user_resources_table *userres *( *_self *, *newact.value *);\)#*/\1#g' -e 's#\(^ *if *( *creator *!= *_self *)\)#/*\1#g' $f
+			fi
+        fi
+    done
+	return 0
+}
+
 function modify_eosio_files()
 {
-	echo "${#modified_list_old_new_file[@]} Changed:"
 	for ln in "${modified_list_old_new_file[@]}"
 	do
 		l=($ln)
@@ -65,5 +88,7 @@ function modify_eosio_files()
 # 确保是正确的eosio源码根目录
 . $script_dir/check_eosio_root.sh $eosio_contract_dir contract
 
+echo "File Modified:"
 modify_eosio_files $1
-
+modify_newaccount_action $1
+echo "$((${#modified_list_old_new_file[@]}+${#modifiled_files[@]})) file changed."

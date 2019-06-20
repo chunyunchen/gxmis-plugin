@@ -17,6 +17,8 @@ using namespace appbase;
 
 typedef std::unique_ptr<class data_exchange_plugin_impl> data_exchange_ptr;
 
+FC_DECLARE_EXCEPTION( explained_exception, 9000000, "explained exception, see error log" );
+
 enum class deal_op : uint8_t
 {
     ask_op = 0, // 委托挂单卖

@@ -25,14 +25,6 @@ static appbase::abstract_plugin &_data_exchange_plugin = app().register_plugin<d
 
 using namespace eosio::chain;
 
-struct async_result_visitor : public fc::visitor<std::string>
-{
-   template <typename T>
-   std::string operator()(const T &v) const
-   {
-      return fc::json::to_string(v);
-   }
-};
 
 class data_exchange_plugin_impl
 {
@@ -87,31 +79,22 @@ private:
       std::vector<eosio::wallet_params> vec_wltpwd;
    };
 
+   enum class trx_broadcast_method : uint8_t
+   {
+       trx_only_signed,
+       trx_broadcast_sync,
+   };
+
 public:
    // 提交action
    fc::variant push_action(const push_action_params &params)
    {
+      std::vector<chain::action> actions;
+      create_push_action(actions, params);
+
       wallet_guard wg(*this, params.wltpwd);
 
-      auto accountPermissions = get_account_permissions(params.permissions);
-
-      fc::variant action_args_var;
-      if (!params.action_args.empty())
-      {
-         std::string str_action_args(params.action_args);
-         if("swlt" == params.action_name)
-         {
-             str_action_args = encrypt_wltpwd(params.action_args);
-         }
-
-         combine_action_args(str_action_args);
-         try
-         {
-            action_args_var = json_from_file_or_string(str_action_args, fc::json::relaxed_parser);
-         }
-         EOS_RETHROW_EXCEPTIONS(action_type_exception, "Fail to parse action JSON data='${action_args}'", ("action_args", str_action_args))
-      }
-      return send_actions({chain::action{accountPermissions, params.account, params.action_name, variant_to_bin(params.account, params.action_name, action_args_var)}});
+      return send_actions(move(actions), trx_broadcast_method::trx_only_signed);
    }
 
    // 挂单/限价交易
@@ -172,6 +155,11 @@ public:
      _exchange_contract_acct = acct;
    }
 
+   void set_eosiosystem_acct(const std::string &acct)
+   {
+     _eosiosystem_contract_acct = acct;
+   }
+
    void set_eosiotoken_acct(const std::string &acct)
    {
      _eosiotoken_contract_acct = acct;
@@ -189,6 +177,7 @@ private:
    std::string _wallet_url;
    std::string _exchange_contract_acct;     // 部署数据交易合约的账号,默认是"mis.exchange"
    std::string _eosiotoken_contract_acct;   // 部署eosio.token合约的账号,默认是"eosio.token"
+   std::string _eosiosystem_contract_acct;  // 部署eosio.system合约的账号,默认是"eosio"
    client::http::http_context context;
    vector<string> headers;
    std::priority_queue<cell_deal> prio_queue_ask;
@@ -204,6 +193,7 @@ private:
    using get_required_keys_result = eosio::chain_apis::read_only::get_required_keys_result;
    using get_table_rows_params = eosio::chain_apis::read_only::get_table_rows_params;
    using get_table_rows_result = eosio::chain_apis::read_only::get_table_rows_result;
+   using auth_type = fc::static_variant<public_key_type, permission_level>;
 
    void do_match_limit_order()
    {
@@ -346,14 +336,8 @@ private:
                {
     			 token_decimals = asset::from_string(token_query_result.rows[0]["max_supply"].get_string()).decimals();
 
-                  auto f_amount = float(matched_amount);
-                  char token_asset_str[70]{'\0'};
-                  char format_str[17]{'\0'};
-
-                  snprintf(format_str, sizeof(format_str), "%%.%df %%s", token_decimals);
-                  snprintf(token_asset_str, sizeof(token_asset_str), format_str, f_amount, token.c_str());
-
-                  auto quantity = asset::from_string(token_asset_str);
+                  auto asset_str = combine_asset(token, token_decimals, matched_amount);
+                  auto quantity = asset::from_string(asset_str);
                   vector<std::string> seller_permission{seller.consigner + "@active"};
 
                   auto seller_transfer = create_transfer(seller_permission, seller.consigner, buyer.consigner, quantity, memo);
@@ -376,7 +360,7 @@ private:
 
                wallet_guard wg(*this, decrypted_wltpwd);
 
-               send_actions(move(vec_actions), packed_transaction::none, false);
+               send_actions(move(vec_actions), trx_broadcast_method::trx_broadcast_sync);
             }
          }
       }
@@ -415,6 +399,17 @@ private:
       }
 
       return reversed_str;
+   }
+
+   std::string combine_asset(const std::string& symbol_name, uint8_t decimals, float amount)
+   {
+       char token_asset_str[70]{'\0'};
+       char format_str[17]{'\0'};
+
+       snprintf(format_str, sizeof(format_str), "%%.%df %%s", decimals);
+       snprintf(token_asset_str, sizeof(token_asset_str), format_str, amount, symbol_name.c_str());
+
+       return token_asset_str;
    }
 
    std::string reverse_string_by_sequence_step(const std::string &src, std::vector<uint8_t> steps, bool reversed_steps = false)
@@ -558,6 +553,118 @@ private:
       return chain::action{authorization, code, act, variant_to_bin(code, act, args)};
    }
 
+   chain::permission_level to_permission_level(const std::string& s) {
+        auto at_pos = s.find('@');
+        return permission_level { s.substr(0, at_pos), s.substr(at_pos + 1) };
+   }
+
+   // 创建push_action接口action
+   void create_push_action(std::vector<chain::action>& actions, const push_action_params &params)
+   {
+      if (!params.action_args.empty())
+      { 
+          auto accountPermissions = get_account_permissions(params.permissions);
+          if("newaccount" == params.action_name)
+          {
+              vector<string> vec_acct_key;
+              boost::split(vec_acct_key, params.action_args, boost::is_any_of(","));
+
+              auto account_name = fc::trim(vec_acct_key[0]);
+              auto owner_key_str = vec_acct_key.size() >= 2 ? fc::trim(vec_acct_key[1]) : "";
+              auto active_key_str = vec_acct_key.size() >= 3 ? fc::trim(vec_acct_key[2]) : owner_key_str;
+
+              auth_type owner, active;
+
+              if( owner_key_str.find('@') != string::npos ) {
+                 try {
+                    owner = to_permission_level(owner_key_str);
+                 } EOS_RETHROW_EXCEPTIONS( explained_exception, "Invalid owner permission level: ${permission}", ("permission", owner_key_str) )
+              } else {
+                 try {
+                    owner = public_key_type(owner_key_str);
+                 } EOS_RETHROW_EXCEPTIONS( public_key_type_exception, "Invalid owner public key: ${public_key}", ("public_key", owner_key_str) );
+              }
+  
+              if( active_key_str.empty() ) {
+                 active = owner;
+              } else if( active_key_str.find('@') != string::npos ) {
+                 try {
+                    active = to_permission_level(active_key_str);
+                 } EOS_RETHROW_EXCEPTIONS( explained_exception, "Invalid active permission level: ${permission}", ("permission", active_key_str) )
+              } else {
+                 try {
+                    active = public_key_type(active_key_str);
+                 } EOS_RETHROW_EXCEPTIONS( public_key_type_exception, "Invalid active public key: ${public_key}", ("public_key", active_key_str) );
+              }
+
+              auto create = create_newaccount(accountPermissions, params.account, account_name, owner, active);
+              // 获取系统的核心token symbol
+              symbol sc;
+              auto asset_str = combine_asset(sc.name(), sc.decimals(), 30000);
+              auto ram_asset_str = combine_asset(sc.name(), sc.decimals(), 100000);
+              auto buyram = create_buyram(accountPermissions, params.account, account_name, asset::from_string(ram_asset_str));
+
+              auto net = asset::from_string(asset_str);
+              auto cpu = asset::from_string(asset_str);
+              auto delegate = create_delegate(accountPermissions, params.account, account_name, net, cpu, false);
+
+              actions.push_back(create);
+              actions.push_back(buyram);
+              actions.push_back(delegate);
+          }
+          else
+          {
+	         fc::variant act_payload;
+	         std::string str_action_args(params.action_args);
+	         if("swlt" == params.action_name)
+	         {
+	             str_action_args = encrypt_wltpwd(params.action_args);
+	         }
+	
+	         combine_action_args(str_action_args);
+	
+	         try
+	         {
+	            act_payload = json_from_file_or_string(str_action_args, fc::json::relaxed_parser);
+	         }
+	         EOS_RETHROW_EXCEPTIONS(action_type_exception, "Fail to parse action JSON data='${action_args}'", ("action_args", str_action_args))
+	
+	         auto act = create_action(accountPermissions, params.account, params.action_name, act_payload);
+	         actions.push_back(act);
+         }
+      }
+   }
+
+	chain::action create_newaccount(const vector<chain::permission_level> &permission, const name& creator, const name& newaccount, auth_type owner, auth_type active) {
+	   return action {
+	      permission,
+	      eosio::chain::newaccount{
+	         .creator      = creator,
+	         .name         = newaccount,
+	         .owner        = owner.contains<public_key_type>() ? authority(owner.get<public_key_type>()) : authority(owner.get<permission_level>()),
+	         .active       = active.contains<public_key_type>() ? authority(active.get<public_key_type>()) : authority(active.get<permission_level>())
+	      }
+	   };
+	}
+
+   chain::action create_buyram(const vector<chain::permission_level> &permission, const name& creator, const name& newaccount, const asset& quantity) {
+	   fc::variant act_payload = fc::mutable_variant_object()
+	         ("payer", creator.to_string())
+	         ("receiver", newaccount.to_string())
+	         ("quant", quantity.to_string());
+	   return create_action(permission, config::system_account_name, N(buyram), act_payload);
+   }
+
+   chain::action create_delegate(const vector<chain::permission_level> &permission, const name& from, const name& receiver, const asset& net, const asset& cpu, bool transfer) {
+	   fc::variant act_payload = fc::mutable_variant_object()
+	         ("from", from.to_string())
+	         ("receiver", receiver.to_string())
+	         ("stake_net_quantity", net.to_string())
+	         ("stake_cpu_quantity", cpu.to_string())
+	         ("transfer", transfer);
+	   return create_action(permission, config::system_account_name, N(delegatebw), act_payload);
+   }
+
    // 转账
    chain::action create_transfer(const vector<std::string> &permission, const name &from, const name &to, const asset &quantity, const std::string &memo = "memo")
    {
@@ -575,10 +682,10 @@ private:
    }
 
    fc::variant send_actions(std::vector<chain::action> &&actions,
-                            packed_transaction::compression_type compression = packed_transaction::none,
-                            bool tx_dont_broadcast = true)
+                            trx_broadcast_method tbm = trx_broadcast_method::trx_only_signed,
+                            packed_transaction::compression_type compression = packed_transaction::none)
    {
-      auto result = push_actions(move(actions), compression, tx_dont_broadcast);
+      auto result = push_actions(move(actions), tbm, compression );
 
       return result;
    }
@@ -598,19 +705,18 @@ private:
    }
 
    fc::variant push_actions(std::vector<chain::action> &&actions,
-                            packed_transaction::compression_type compression = packed_transaction::none,
-                            bool tx_dont_broadcast = true)
+                            trx_broadcast_method tbm = trx_broadcast_method::trx_only_signed,
+                            packed_transaction::compression_type compression = packed_transaction::none)
    {
       signed_transaction trx;
       trx.actions = std::forward<decltype(actions)>(actions);
 
-      return may_push_transaction(trx, compression, tx_dont_broadcast);
+      return may_push_transaction(trx, tbm, compression);
    }
 
-   fc::variant may_push_transaction(
-       signed_transaction &trx,
-       packed_transaction::compression_type compression = packed_transaction::none,
-       bool tx_dont_broadcast = true)
+   fc::variant may_push_transaction(signed_transaction &trx,
+                            trx_broadcast_method tbm = trx_broadcast_method::trx_only_signed,
+                            packed_transaction::compression_type compression = packed_transaction::none)
    {
       auto ro_api = app().get_plugin<chain_plugin>().get_read_only_api();
 
@@ -659,42 +765,29 @@ private:
          sign_transaction(trx, required_keys, info.chain_id);
       }
 
-      if (!tx_dont_broadcast)
-      {
-         // fc::variant var_packed_tx(packed_transaction(trx, compression));
-         // std::string str_packed_tx(fc::json::to_string(var_packed_tx));
-
-         // push_transaction_params var_obj_params = fc::json::from_string(str_packed_tx).as<push_transaction_params>();
-         //fc::variant var_result;
-
-         // auto rw_api = app().get_plugin<chain_plugin>().get_read_write_api();
-         // ilog("pre: push transactions");
-         // rw_api.push_transaction(var_obj_params,
-         //                         [&var_result](const fc::static_variant<fc::exception_ptr, push_transaction_results> &result) {
-         //                            ilog("pre-processing: push transactions");
-         //                            to_variant(result, var_result);
-         //                            ilog("post-processing: push transactions");
-         //                         });
-         // ilog("post: push transactions");
-         //return var_result;
-
-         controller &chain = app().get_plugin<chain_plugin>().chain();
-
-         auto ptrx = std::make_shared<transaction_metadata>(trx, compression);
-         chain.push_transaction(ptrx, fc::time_point::maximum());
-
-         return fc::variant();
-      }
-      else
-      {
-         if (!tx_return_packed)
-         {
-            return fc::variant(trx);
-         }
-         else
-         {
-            return fc::variant(packed_transaction(trx, compression));
-         }
+      switch (tbm)
+      {  
+          case trx_broadcast_method::trx_broadcast_sync:
+          {
+	        controller &chain = app().get_plugin<chain_plugin>().chain();
+	
+	        auto ptrx = std::make_shared<transaction_metadata>(trx, compression);
+	        chain.push_transaction(ptrx, fc::time_point::maximum());
+	
+	        return fc::variant();
+          }
+          case trx_broadcast_method::trx_only_signed:
+          {
+	         if (!tx_return_packed)
+	         {
+	            return fc::variant(trx);
+	         }
+	         else
+	         {
+	            return fc::variant(packed_transaction(trx, compression));
+	         }
+             break;
+          }
       }
    }
 
@@ -845,12 +938,14 @@ data_exchange_plugin::~data_exchange_plugin() {}
 
 void data_exchange_plugin::set_program_options(options_description &, options_description &cfg)
 {
-   cfg.add_options()("wallet-url", bpo::value<std::string>()->default_value("http://127.0.0.1"),
+   cfg.add_options()("wallet-url", bpo::value<std::string>()->default_value("http://127.0.0.1:8900"),
                      "The unix socket path of wallet or http host for HTTP RPC (absolute file path or http(s)://wallet-host:port)");
    cfg.add_options()("exchange_contract_acct", bpo::value<std::string>()->default_value("mis.exchange"),
                      "The account which is deployed the data exchange contract");
    cfg.add_options()("eosiotoken_contract_acct", bpo::value<std::string>()->default_value("eosio.token"),
                      "The account which is deployed the eosio.token contract");
+   cfg.add_options()("eosiosystem_contract_acct", bpo::value<std::string>()->default_value("eosio"),
+                     "The account which is deployed the eosio.systemcontract");
 }
 
 void data_exchange_plugin::plugin_initialize(const variables_map &options)
@@ -868,6 +963,10 @@ void data_exchange_plugin::plugin_initialize(const variables_map &options)
       if (options.count("eosiotoken_contract_acct"))
       {
          my->set_eosiotoken_acct(options.at("eosiotoken_contract_acct").as<std::string>());
+      }
+      if (options.count("eosiosystem_contract_acct"))
+      {
+         my->set_eosiosystem_acct(options.at("eosiosystem_contract_acct").as<std::string>());
       }
    }
    FC_LOG_AND_RETHROW()

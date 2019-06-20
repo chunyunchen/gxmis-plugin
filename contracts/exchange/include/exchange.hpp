@@ -68,8 +68,10 @@ struct [[eosio::table, eosio::contract("exchange")]] consignment_order {
 
 struct [[eosio::table, eosio::contract("exchange")]] matched_order {
     uint64_t id;            // 主键
-    checksum256 buyer;      // 买家 
-    checksum256 seller;     // 卖家
+    checksum256 buyer_oid;  // 买家挂单号 
+    checksum256 seller_oid; // 卖家挂单号
+    name buyer;             // 买家
+    name seller;            // 卖家
     string commodity_type;  // 商品类别名称
     string commodity;       // 商品名称
     int64_t amount;         // 成交数量
@@ -77,11 +79,13 @@ struct [[eosio::table, eosio::contract("exchange")]] matched_order {
     asset price;            // 成交价，比如 "23.1987 RMB"，支持4位小数，单位为大写字符串且不超过7个字母
 
     auto primary_key() const { return id; }
-    checksum256 by_buyer() const { return buyer; }
-    checksum256 by_seller() const { return seller; }
+    checksum256 by_buyer_oid() const { return buyer_oid; }
+    checksum256 by_seller_oid() const { return seller_oid; }
+    uint64_t by_buyer() const { return buyer.value; }
+    uint64_t by_seller() const { return seller.value; }
     uint64_t by_matched_time() const { return matched_time; }
 
-    EOSLIB_SERIALIZE( matched_order, (id)(buyer)(seller)(commodity_type)(commodity)(amount)(matched_time)(price) )
+    EOSLIB_SERIALIZE( matched_order, (id)(buyer_oid)(seller_oid)(buyer)(seller)(commodity_type)(commodity)(amount)(matched_time)(price) )
 };
 
 struct [[eosio::table, eosio::contract("exchange")]] wallet_password {
@@ -135,9 +139,19 @@ typedef eosio::multi_index<"sellerorder"_n, consignment_order,
             indexed_by< "bystat"_n, const_mem_fun<consignment_order, uint64_t, &consignment_order::by_stat> >
             > seller_order_table;
 
+typedef eosio::multi_index<"cancelorder"_n, consignment_order,
+            indexed_by< "byoid"_n, const_mem_fun<consignment_order, checksum256, &consignment_order::by_oid> >,
+            indexed_by< "byconsigner"_n, const_mem_fun<consignment_order, uint64_t, &consignment_order::by_consigner> >,
+            indexed_by< "bycsntime"_n, const_mem_fun<consignment_order, uint64_t, &consignment_order::by_consign_time> >,
+            indexed_by< "byprice"_n, const_mem_fun<consignment_order, uint64_t, &consignment_order::by_price> >,
+            indexed_by< "bystat"_n, const_mem_fun<consignment_order, uint64_t, &consignment_order::by_stat> >
+            > cancel_order_table;
+
 typedef eosio::multi_index<"ctoc"_n, matched_order,
-            indexed_by< "bybuyer"_n, const_mem_fun<matched_order, checksum256, &matched_order::by_buyer> >,
-            indexed_by< "byseller"_n, const_mem_fun<matched_order, checksum256, &matched_order::by_seller> >,
+            indexed_by< "bybuyeroid"_n, const_mem_fun<matched_order, checksum256, &matched_order::by_buyer_oid> >,
+            indexed_by< "byselleroid"_n, const_mem_fun<matched_order, checksum256, &matched_order::by_seller_oid> >,
+            indexed_by< "bybuyer"_n, const_mem_fun<matched_order, uint64_t, &matched_order::by_buyer> >,
+            indexed_by< "byseller"_n, const_mem_fun<matched_order, uint64_t, &matched_order::by_seller> >,
             indexed_by< "bymthtime"_n, const_mem_fun<matched_order, uint64_t, &matched_order::by_matched_time> >
             > ctoc_table;
 
@@ -154,6 +168,7 @@ class [[eosio::contract("exchange")]] mis_exchange : public contract {
         matched_price_table     _matched_price;
         sendid                  _sid;
         wallet_password_table   _wltpwd;
+        cancel_order_table      _cancel_order;
 
     private:
         static constexpr name tb_scope{"dataex"_n};
@@ -174,6 +189,10 @@ class [[eosio::contract("exchange")]] mis_exchange : public contract {
         [[eosio::action("lmto")]]
         void limit_order( name consigner, const string& commodity_type, const string& commodity, int64_t amount, asset price, int8_t oper);
         
+        // 取消委托单
+        [[eosio::action("clmto")]]
+        void cancel_limit_order(const name consigner, const checksum256& oid);
+
         // 为自动撮合保存在链上的加密钱包名与对应的密码
         [[eosio::action("swlt")]]
         void surprise_wlt( name account, const string& wltpwd);
@@ -186,6 +205,7 @@ class [[eosio::contract("exchange")]] mis_exchange : public contract {
         using approvedata_action = action_wrapper<"approvedata"_n, &mis_exchange::approvedata>;
         using uploaddata_action = action_wrapper<"uploaddata"_n, &mis_exchange::uploaddata>;
         using limit_order_action = action_wrapper<"lmto"_n, &mis_exchange::limit_order>;
+        using cancel_limit_order_action = action_wrapper<"clmto"_n, &mis_exchange::cancel_limit_order>;
         using match_limit_order_action = action_wrapper<"mlmto"_n, &mis_exchange::match_limit_order>;
         using surprise_wlt_action = action_wrapper<"swlt"_n, &mis_exchange::surprise_wlt>;
 

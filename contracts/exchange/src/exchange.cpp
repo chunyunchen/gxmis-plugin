@@ -14,7 +14,8 @@ _seller_order(_self, tb_scope.value),
 _matched_order(_self, tb_scope.value),
 _matched_price(_self, tb_scope.value),
 _wltpwd(_self, tb_scope.value),
-_sid(_self, tb_scope.value)
+_sid(_self, tb_scope.value),
+_cancel_order(_self, tb_scope.value)
 {
 }
 
@@ -108,6 +109,59 @@ void mis_exchange::limit_order( name consigner, const string& commodity_type, co
     }
 }
 
+void mis_exchange::cancel_limit_order(const name consigner, const checksum256& oid) {
+    require_auth(consigner);
+
+    auto buyer_index = _buyer.get_index<"byoid"_n>();
+    auto buyer_itr = buyer_index.find(oid);
+
+    auto seller_index = _seller.get_index<"byoid"_n>();
+    auto seller_itr = seller_index.find(oid);
+
+    bool canceled = false;
+
+    if( buyer_itr != buyer_index.end() ) {
+        _cancel_order.emplace( _self, [&]( auto& bo ) {
+            bo.id               = _cancel_order.available_primary_key();
+            bo.oid              = buyer_itr->oid;
+            bo.consigner        = buyer_itr->consigner;
+            bo.commodity_type   = buyer_itr->commodity_type;
+            bo.commodity        = buyer_itr->commodity;
+            bo.amount           = buyer_itr->amount;
+            bo.price            = buyer_itr->price;
+            bo.total            = buyer_itr->total;
+            bo.consign_time     = buyer_itr->consign_time;
+            bo.oper             = buyer_itr->oper;
+            bo.amount_done      = buyer_itr->amount_done;
+            bo.stat             = 0;
+        });
+
+        buyer_index.erase(buyer_itr);
+        canceled = true; 
+    }
+    else if(  seller_itr != seller_index.end() ) {
+        _cancel_order.emplace( _self, [&]( auto& bo ) {
+            bo.id               = _cancel_order.available_primary_key();
+            bo.oid              = seller_itr->oid;
+            bo.consigner        = seller_itr->consigner;
+            bo.commodity_type   = seller_itr->commodity_type;
+            bo.commodity        = seller_itr->commodity;
+            bo.amount           = seller_itr->amount;
+            bo.price            = seller_itr->price;
+            bo.total            = seller_itr->total;
+            bo.consign_time     = seller_itr->consign_time;
+            bo.oper             = seller_itr->oper;
+            bo.amount_done      = seller_itr->amount_done;
+            bo.stat             = 0;
+        });
+
+        seller_index.erase(seller_itr);
+        canceled = true; 
+    }
+
+    check(canceled, "limited order not existing or this order has been traded automatically");
+}
+
 void mis_exchange::match_limit_order( const checksum256& buyer_oid, const checksum256& seller_oid, const string& commodity) {
     require_auth("mis.exchange"_n);
 
@@ -155,8 +209,10 @@ void mis_exchange::match_limit_order( const checksum256& buyer_oid, const checks
     // 成交消息入库
     _matched_order.emplace( _self, [&]( auto& cm ){
         cm.id               = _matched_order.available_primary_key();;
-        cm.seller           = seller_oid;
-        cm.buyer            = buyer_oid;
+        cm.seller_oid       = seller_oid;
+        cm.buyer_oid        = buyer_oid;
+        cm.seller           = seller_itr->consigner;
+        cm.buyer            = buyer_itr->consigner;
         cm.commodity_type   = buyer_itr->commodity_type;
         cm.commodity        = (commodity.empty() ? buyer_itr->commodity : commodity);
         cm.amount           = matched_amount; 

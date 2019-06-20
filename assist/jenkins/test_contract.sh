@@ -11,7 +11,9 @@ core_symbole_name=$(cat $parent_workspace_dir/eosio/conf/core_symbol_name)
 cleos=$parent_workspace_dir/eosio/bin/cleos
 
 test_accounts=()
+all_pubkeys_in_wallet=()
 . $script_dir/pre_test.sh
+
 # load tool functions
 . $script_dir/utils.sh
 
@@ -51,11 +53,7 @@ function add_wltpwd_into_chain()
 		"action_args":"'"${test_accounts[$idx-1]}"','"${WALLET_NAME}#${wlt_pwd}"'"
 		"permissions":["'"${test_accounts[$idx-1]}"'@active"]
 		}')
-		res=${res//\\/}
-		res=${res/\"\{/\{}
-		res=${res/\}\"/\}}
-	
-		res=$(curl -X POST $http_server_address/v1/chain/push_transaction -d ''"$res"'')
+
 		echo $res | grep -qiw "executed" || exit 1
     done
 }
@@ -65,10 +63,9 @@ function query_table_by_sha256_index_test()
     # EOSIO中的sha256字符串存储的大小端顺序与平时产生的sha256字节序相反，所以需要翻转
     reversed_sha256_str=$(reverse_fixed_char $sha256_buyer)
     reversed_sha256_str=$(reverse_fixed_char $reversed_sha256_str 32)
-    set -x
+
     res=$($cleos get table $contract_user $table_scope ctoc $cleos_option  --index 2 --key-type sha256 -L $reversed_sha256_str -U $reversed_sha256_str)
     echo $res | grep -qw "$sha256_buyer" || exit 1
-    set +x
 
     return 0
 }
@@ -87,6 +84,21 @@ function swlt_action_test()
 	$cleos push action $contract_user swlt '["'"${test_accounts[2]}"'",""]' -p ${test_accounts[2]}
     res=$($cleos get table $contract_user $table_scope wltpwd $cleos_option)
     echo $res | grep -qw "${test_accounts[2]}" && exit 1
+}
+
+function clmto_action_test()
+{
+    try_unlock_wallet $WALLET_NAME
+
+	$cleos push action $contract_user lmto '["'"${test_accounts[1]}"'","token","'"$core_symbole_name"'",'"$sell_quantity"',"'"$sell_price"'",0]' -p ${test_accounts[1]}
+
+    oid=$($cleos get table $contract_user $table_scope seller $cleos_option --index 3 --key-type i64 -L ${test_accounts[1]} -U ${test_accounts[1]} | grep oid | cut -d'"' -f 4 )
+    $cleos push action $contract_user clmto '["'"${test_accounts[1]}"'","'"$oid"'"]' -p ${test_accounts[1]}
+
+    res=$($cleos get table $contract_user $table_scope cancelorder $cleos_option)
+    echo $res | grep -qw $oid || exit 1
+
+    return 0
 }
 
 function lmto_action_test()
@@ -145,7 +157,7 @@ function mlmto_action_test()
     echo $res | grep -qw "\"buyer\": \"${sha256_buyer}\"" || exit 1
 
     res="$($cleos get table $contract_user $table_scope matchedprice $cleos_option --index 2 --key-type sha256 -L $sha256_sym -U $sha256_sym | grep price | cut -d'"' -f 4)"
-    if [[ "$matched_price" != "$res" ]]; then exit 1; fi
+    [[ "$matched_price" != "$res" ]] && exit 1
 
 #	$cleos push action $contract_user mlmto '[["'"$sha256_seller"'","'"$sha256_buyer"'"],""]' ${cleos_multi_perms}
     # make sure limited orders have updated
@@ -159,7 +171,9 @@ function mlmto_action_test()
 
     # failed testing
     res=$($cleos push action $contract_user mlmto '["'"$sha256_buyer"'","'"$sha256_seller"'","'"$core_symbole_name"'"]' -p ${test_accounts[1]} 2>&1) || true  # the true: make jenkins build continue 
+    set +x
     echo $res | grep -qw "Missing required authority" || exit 1
+    set -x
 
     return 0
 }
@@ -174,6 +188,7 @@ set -x
 set_contract_to_account
 add_wltpwd_into_chain
 #swlt_action_test
+clmto_action_test
 lmto_action_test
 #mlmto_action_test
 set +x
