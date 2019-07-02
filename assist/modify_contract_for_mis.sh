@@ -40,15 +40,15 @@ function modify_newaccount_action()
 		echo $f
         if [[ "X$undo" == "X$1" ]]; then
 			if [ "$ARCH" == "Linux" ]; then
-	            sed  -i -e 's#^\*/\( *user_resources_table *userres *( *_self *, *newact.value *);\)#\1#g' -e 's#^/\*\( *if *( *creator *!= *_self *)\)#\1#g' $f
+                sed  -i -e 's#^\*/\( *user_resources_table *userres *( *get_self( *) *, *newact.value *);\)#\1#g' -e 's#^/\*\( *if *( *creator *!= *get_self( *) *)\)#\1#g' $f
 			else
-	            sed  -i "" -e 's#^\*/\( *user_resources_table *userres *( *_self *, *newact.value *);\)#\1#g' -e 's#^/\*\( *if *( *creator *!= *_self *)\)#\1#g' $f
+                sed  -i "" -e 's#^\*/\( *user_resources_table *userres *( *get_self( *) *, *newact.value *);\)#\1#g' -e 's#^/\*\( *if *( *creator *!= *get_self( *) *)\)#\1#g' $f
             fi
         else
 			if [ "$ARCH" == "Linux" ]; then
-				sed  -i -e 's#\(^ *user_resources_table *userres *( *_self *, *newact.value *);\)#*/\1#g' -e 's#\(^ *if *( *creator *!= *_self *)\)#/*\1#g' $f
+                sed  -i -e 's#\(^ *user_resources_table *userres *( *get_self( *) *, *newact.value *);\)#*/\1#g' -e 's#\(^ *if *( *creator *!= *get_self( *) *)\)#/*\1#g' $f
 			else
-				sed  -i "" -e 's#\(^ *user_resources_table *userres *( *_self *, *newact.value *);\)#*/\1#g' -e 's#\(^ *if *( *creator *!= *_self *)\)#/*\1#g' $f
+                sed  -i "" -e 's#\(^ *user_resources_table *userres *( *get_self( *) *, *newact.value *);\)#*/\1#g' -e 's#\(^ *if *( *creator *!= *get_self( *) *)\)#/*\1#g' $f
 			fi
         fi
     done

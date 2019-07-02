@@ -7,9 +7,9 @@ cp -R $EOSIO_SYSTEM_CONTRACT_REPO_DIR/. ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
 fi
 
 if [[ "true" == $UPDATE_CONTRACT_REPO ]]; then
-    rm -rf ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
+	rm -rf ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
     mkdir ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
-    cp -R $EOSIO_SYSTEM_CONTRACT_REPO_DIR/. ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
+	cp -R $EOSIO_SYSTEM_CONTRACT_REPO_DIR/. ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
 fi
 
 rm -rf ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}/assist
@@ -18,11 +18,11 @@ mv assist ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
 
 cd ${EOSIO_SYSTEM_CONTRACT_REPO_DIR##*/}
 ./assist/modify_contract_for_mis.sh
-./build.sh
+./build.sh -y -e $(dirname $WORKSPACE)/eosio
 
 cd ../contracts/exchange
 if [[ -d ./build ]]; then
-    rm -rf ./build
+	rm -rf ./build
 fi
 
 mkdir -p ./build

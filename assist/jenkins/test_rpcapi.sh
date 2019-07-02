@@ -11,6 +11,9 @@ parent_workspace_dir=$(dirname $WORKSPACE)
 pubkey_prefix=$(cat $parent_workspace_dir/eosio/conf/pubkey_prefix)
 core_symbole_name=$(cat $parent_workspace_dir/eosio/conf/core_symbol_name)
 cleos=$parent_workspace_dir/eosio/bin/cleos
+nodeos=$parent_workspace_dir/eosio/bin/nodeos
+
+http_server_address="http://""$(cat $parent_workspace_dir/eosio/conf/http_server_address)"
 
 test_accounts=()
 all_pubkeys_in_wallet=()
@@ -21,7 +24,6 @@ all_pubkeys_in_wallet=()
 
 wallet_pwd_file=$wallet_pwd_dir/$WALLET_NAME.$wallet_pwd_file_ext
 wlt_pwd=$(cat $wallet_pwd_file)
-http_server_address="http://""$(cat $parent_workspace_dir/eosio/conf/http_server_address)"
 
 function transfer_test()
 {

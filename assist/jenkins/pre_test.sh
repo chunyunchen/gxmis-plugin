@@ -27,6 +27,30 @@ balance_token_count="100000.0000"
 tokens=($core_symbole_name RMB CNY USDT USD)
 all_accounts_num=${#eosio_system_accounts[@]}
 
+function active_PREACTIVATE_FEATURE_for_nodeos-v1.8.0_or_later()
+{
+    set -x
+    PREACTIVATE_FEATURE_NAME="PREACTIVATE_FEATURE"
+
+    nodeosv=$($nodeos --version || true)
+    [[ "$nodeosv" > "v1.8" || "$nodeosv" > "1.8" ]] && activated_protocol_features=$(curl -X POST $http_server_address/v1/chain/get_activated_protocol_features) || true
+
+    echo $activated_protocol_features | grep -qw $PREACTIVATE_FEATURE_NAME
+
+    if [[ 0 -lt $? ]]; then
+        supported_protocol_features=$(curl -X POST $http_server_address/v1/producer/get_supported_protocol_features)
+
+        truncated_tail=${supported_protocol_features%%${PREACTIVATE_FEATURE_NAME}*}
+        truncated_head=${truncated_tail##*\"feature_digest\":\"}
+        preactivate_feature_digest=${truncated_head%%\",\"*}
+
+        curl -X POST $http_server_address/v1/producer/schedule_protocol_feature_activations -d '{"protocol_features_to_activate": ['"$preactivate_feature_digest"']}'
+    fi
+    set +x
+
+    return 0
+}
+
 function set_system_contracts()
 {
 	$cleos set contract eosio.token $assist_dir/build/contracts/eosio.token/
@@ -200,6 +224,7 @@ function set_test_accounts()
 
 function main()
 {
+    active_PREACTIVATE_FEATURE_for_nodeos-v1.8.0_or_later
     create_wallet
     set_test_accounts
     may_create_keys_in_wallet_and_get

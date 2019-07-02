@@ -9,6 +9,8 @@ parent_workspace_dir=$(dirname $WORKSPACE)
 pubkey_prefix=$(cat $parent_workspace_dir/eosio/conf/pubkey_prefix)
 core_symbole_name=$(cat $parent_workspace_dir/eosio/conf/core_symbol_name)
 cleos=$parent_workspace_dir/eosio/bin/cleos
+nodeos=$parent_workspace_dir/eosio/bin/nodeos
+http_server_address="http://""$(cat $parent_workspace_dir/eosio/conf/http_server_address)"
 
 test_accounts=()
 all_pubkeys_in_wallet=()
@@ -16,8 +18,6 @@ all_pubkeys_in_wallet=()
 
 # load tool functions
 . $script_dir/utils.sh
-
-http_server_address="http://""$(cat $parent_workspace_dir/eosio/conf/http_server_address)"
 
 wallet_pwd_file=$wallet_pwd_dir/$WALLET_NAME.$wallet_pwd_file_ext
 wlt_pwd=$(cat $wallet_pwd_file)
@@ -90,7 +90,9 @@ function clmto_action_test()
 {
     try_unlock_wallet $WALLET_NAME
 
-	$cleos push action $contract_user lmto '["'"${test_accounts[1]}"'","token","'"$core_symbole_name"'",'"$sell_quantity"',"'"$sell_price"'",0]' -p ${test_accounts[1]}
+    sq=$(($RANDOM % 77 + 1))
+    sp="$(($RANDOM % 99))"".3223 RMB"
+	$cleos push action $contract_user lmto '["'"${test_accounts[1]}"'","token","'"$core_symbole_name"'",'"$sq"',"'"$sp"'",0]' -p ${test_accounts[1]}
 
     oid=$($cleos get table $contract_user $table_scope seller $cleos_option --index 3 --key-type i64 -L ${test_accounts[1]} -U ${test_accounts[1]} | grep oid | cut -d'"' -f 4 )
     $cleos push action $contract_user clmto '["'"${test_accounts[1]}"'","'"$oid"'"]' -p ${test_accounts[1]}
