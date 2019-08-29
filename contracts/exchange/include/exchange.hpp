@@ -97,6 +97,33 @@ struct [[eosio::table, eosio::contract("exchange")]] wallet_password {
     EOSLIB_SERIALIZE( wallet_password, (account)(wltpwd) )
 };
 
+struct [[eosio::table, eosio::contract("exchange")]] sgx_model_result{
+    uint64_t id;            // 主键
+    string content;         // SGX模型计算结果内容
+    string form;            // 内容存储形式，大数据、多记录；值：bunch或record
+    string type;            // 计算结果类型，标签、指标等；值：label或quota
+    string access_method;   // 获取content的方式，通过url下载、直接显示文本；值：url或text
+    string company;         // 提供content的公司名称
+    uint64_t encrypted;      // content是否加密；值：0，未加密；1，已加密
+
+    auto primary_key() const { return id; }
+    checksum256 by_form() const { return string_to_sha256(form); }
+    checksum256 by_type() const { return string_to_sha256(type); }
+    checksum256 by_access_method() const { return string_to_sha256(access_method); }
+    checksum256 by_company() const { return string_to_sha256(company); }
+    uint64_t by_encrypted() const { return encrypted; }
+
+    EOSLIB_SERIALIZE( sgx_model_result, (id)(content)(form)(type)(access_method)(company)(encrypted) )
+};
+
+typedef eosio::multi_index<"sgxresult"_n, sgx_model_result,
+            indexed_by< "byform"_n, const_mem_fun<sgx_model_result, checksum256, &sgx_model_result::by_form> >,
+            indexed_by< "bytype"_n, const_mem_fun<sgx_model_result, checksum256, &sgx_model_result::by_type> >,
+            indexed_by< "byaccmeth"_n, const_mem_fun<sgx_model_result, checksum256, &sgx_model_result::by_access_method> >,
+            indexed_by< "bycompany"_n, const_mem_fun<sgx_model_result, checksum256, &sgx_model_result::by_company> >,
+            indexed_by< "byencrypted"_n, const_mem_fun<sgx_model_result, uint64_t, &sgx_model_result::by_encrypted> >
+            > sgx_model_result_table;
+
 typedef eosio::multi_index< "wltpwd"_n, wallet_password > wallet_password_table;
 
 typedef eosio::multi_index< "matchedprice"_n, matched_price,
@@ -169,6 +196,7 @@ class [[eosio::contract("exchange")]] mis_exchange : public contract {
         sendid                  _sid;
         wallet_password_table   _wltpwd;
         cancel_order_table      _cancel_order;
+        sgx_model_result_table  _sgx_model_result;
 
     private:
         static constexpr name tb_scope{"dataex"_n};
@@ -200,6 +228,10 @@ class [[eosio::contract("exchange")]] mis_exchange : public contract {
         // 自动撮合委托单
 	    [[eosio::action("mlmto")]]
         void match_limit_order( const checksum256& buyer_oid, const checksum256& seller_oid, const string& commodity);
+
+        // 链外应用提交SGX模型计算结果到区块 
+	    [[eosio::action("deliversmr")]]
+        void deliver_sgx_model_result(const string& content, const string& form, const string& type, const string& access_method, const string& company, uint64_t encrypted);
 
         using buydata_action = action_wrapper<"buydata"_n, &mis_exchange::buydata>;
         using approvedata_action = action_wrapper<"approvedata"_n, &mis_exchange::approvedata>;

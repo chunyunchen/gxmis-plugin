@@ -17,14 +17,14 @@ nodeos=$assist_dir/build/bin/nodeos
 function run_nodeos()
 {
   if  [[ "$START_MODE" = "restart" ]];then
-	$nodeos --hard-replay-blockchain --config-dir "${config_dir}" --data-dir "${data_dir}"
+	$nodeos --hard-replay-blockchain --config-dir "${config_dir}" --data-dir "${data_dir}" --disable-replay-opts
   elif  [[ "$START_MODE" = "cleanStart" ]];then
-	$nodeos --delete-all-blocks --config-dir "${config_dir}" --data-dir "${data_dir}"
+	$nodeos --delete-all-blocks --config-dir "${config_dir}" --data-dir "${data_dir}" --disable-replay-opts
   elif  [[ "$START_MODE" = "genesis" || "$START_MODE" = "removeData" ]];then
 	if [[ "$START_MODE" = "removeData" ]];then
 		rm -rf $data_dir/*
 	fi
-	$nodeos --config-dir "${config_dir}"  --data-dir "${data_dir}"
+	$nodeos --config-dir "${config_dir}"  --data-dir "${data_dir}" --disable-replay-opts
   fi
 }
 
