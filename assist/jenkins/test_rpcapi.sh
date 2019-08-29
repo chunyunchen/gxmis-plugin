@@ -181,6 +181,28 @@ function newaccount_test()
     done
 }
 
+function deliver_sgx_model_result_test()
+{
+    action_args=(
+        "https%l//developers.eos.io/,bunch,label,url,国信泰一,1"
+        "'[{"IDNumber"%l"110119197910274319"%j"name"%l"李一兵"%j"score"%l37%j"max_score"%l100}]',record,quota,text,国信泰一,0"
+        )
+    for arg in ${action_args[@]} 
+    do
+		res=$(curl -X POST $http_server_address/v1/exchange/push_action -d '{
+		"wltpwd":"'"$WALLET_NAME#$wlt_pwd"'",
+		"account":"mis.exchange",
+		"action_name":"deliversmr",
+		"action_args":"'"$arg"'"
+		"permissions":["mis.exchange@active"]
+		}')
+	
+	    set +x
+		echo $res | grep -qiw "executed" || exit 1
+	    set -x
+    done
+}
+
 function show_blockchain_info()
 {
     curl -X POST $http_server_address/v1/chain/get_info
@@ -190,6 +212,7 @@ set -x
 transfer_test
 #limit_order_test 2
 #swlt_test
-newaccount_test
+#newaccount_test
+deliver_sgx_model_result_test
 show_blockchain_info
 set +x

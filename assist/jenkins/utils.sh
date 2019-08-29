@@ -38,12 +38,17 @@ function reverse_fixed_char()
 {
     fixed_len=2
     source_str=$1
-
     if [[ $# -ge 2 ]]; then
         fixed_len=$2
     fi
 
     str_len=${#source_str}
+    if [[ 0 != $(($str_len % $fixed_len)) ]]
+    then
+        echo "The length($str_len) of string must be integral multiple of length of reserved fixed len($fixed_len)."
+        return 1
+    fi
+
     half_str_len=$(($str_len / $fixed_len))
     reversed_str=""
     for ((i=1; i<=$half_str_len; i++))
